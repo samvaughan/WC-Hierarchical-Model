@@ -312,8 +312,8 @@ if __name__=='__main__':
     from tqdm import tqdm
 
     #Load the table
-    df=pd.read_csv('results.csv')
-    wc_df=pd.read_csv('wc_matches.csv')
+    df=pd.read_csv('CSV_files/results.csv')
+    wc_df=pd.read_csv('CSV_files/wc_matches.csv')
     wc_teams=wc_df.team1.unique()
 
     #Get rid of teams with few games and make sure all world cup nations are represented
@@ -461,8 +461,8 @@ if __name__=='__main__':
 
     #get the results as precentages
     res=f.T.apply(pd.Series.value_counts)/n_sims*100.
-    f.to_csv('sims_correct_WC_bracket.csv')
-    res.to_csv('sims_correct_WC_bracket_summary.csv')
+    f.to_csv('CSV_files/sims_correct_WC_bracket.csv')
+    res.to_csv('CSV_files/sims_correct_WC_bracket_summary.csv')
     #res.T.sort_values(4.0, ascending=False)
 
 
