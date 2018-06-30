@@ -5,143 +5,15 @@ import pymc3 as pm
 import theano.tensor as tt
 import theano
 
-df=pd.read_csv('results.csv')
-wc_df=pd.read_csv('wc_matches.csv')
-wc_teams=wc_df.team1.unique()
 
-#Get rid of rubbish teams with few games...
-home_team_games=df.groupby(['home_team']).size() 
-all_teams=set(home_team_games[home_team_games.sort_values()>100].index.values)
-all_teams.add('Serbia')
-all_teams.add('Iceland')
-all_teams.add('Croatia')
-all_teams.add('Panama')
-
-all_teams=np.array(list(all_teams))
-all_teams[np.where(all_teams=='Korea Republic')]='South Korea'
-
-# all_teams=['England', 'Scotland']
-#Get rid of some of the smaller teams
-all_teams=np.delete(all_teams, [np.where(all_teams=='Uganda'), np.where(all_teams=='Zambia'), np.where(all_teams=='Malaysia'), np.where(['Czechoslovakia'])])
-
-
-
-#Add some columns
-
-tmp1 = df[['date','home_team', 'home_score']]
-tmp2 = df[['date','away_team', 'away_score']]
-tmp1.columns =  ['Date','name', 'score']
-tmp2.columns =  ['Date','name', 'score']
-tmp = pd.concat([tmp1,tmp2], ignore_index=True)
-df['home_last_5_goals_for']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
-
-tmp = pd.concat([tmp2,tmp1], ignore_index=True)
-df['away_last_5_goals_for']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
-
-tmp1 = df[['date','home_team', 'away_score']]
-tmp2 = df[['date','away_team', 'home_score']]
-tmp1.columns =  ['Date','name', 'score']
-tmp2.columns =  ['Date','name', 'score']
-tmp = pd.concat([tmp1,tmp2], ignore_index=True)
-df['home_last_5_goals_against']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
-
-tmp = pd.concat([tmp2,tmp1], ignore_index=True)
-df['away_last_5_goals_against']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
-
-df['home_last_5_gd']=df['home_last_5_goals_for']-df['home_last_5_goals_against']
-df['away_last_5_gd']=df['away_last_5_goals_for']-df['away_last_5_goals_against']
-
-#Drop the first row of each group, since it's been contaminated by rolling the last row to the start.
-#Here we make it nan and then dropna 
-def mask_first(x):
-    result = np.ones_like(x)
-    result[0] = 0
-    return result
-mask = ~df.groupby(['home_team'])['home_score'].transform(mask_first).astype(bool)
-df.loc[mask]=np.nan
-df=df.dropna()
-
-teams = pd.DataFrame(all_teams, columns=['team'])
-teams['i'] = teams.index
-
-
-mask=(df.home_team.isin(all_teams))&(df.away_team.isin(all_teams))
-df=df[mask]
-
-n_teams=len(np.unique(all_teams))
-
-df = pd.merge(df, teams, left_on='home_team', right_on='team', how='left')
-df = df.rename(columns = {'i': 'i_home'}).drop('team', 1)
-df = pd.merge(df, teams, left_on='away_team', right_on='team', how='left')
-df = df.rename(columns = {'i': 'i_away'}).drop('team', 1)
-
-
-from datetime import datetime
-cutoff=datetime(2000, 1, 1)
-df.date=pd.to_datetime(df['date'])
-df=df[df.date>cutoff]
-
-
-tmp.Date=pd.to_datetime(tmp['Date'])
-n_matches=tmp[tmp.Date>cutoff].name.value_counts()
-
-
-
-
-home_team = theano.shared(df.i_home.values)
-away_team = theano.shared(df.i_away.values)
-
-
-observed_home_goals = df.home_score.values
-observed_away_goals = df.away_score.values
-
-#Goal Difference in last 5 games
-home_last_5_gd=df.home_last_5_gd.values
-away_last_5_gd=df.away_last_5_gd.values
-
-#zscore
-home_gd_z=theano.shared((home_last_5_gd-np.mean(home_last_5_gd))/np.std(home_last_5_gd))
-away_gd_z=theano.shared((away_last_5_gd-np.mean(away_last_5_gd))/np.std(away_last_5_gd))
-
-
-with pm.Model() as team_abilities:
-
-
-    intercept = pm.Flat('intercept')
-    sd_att = pm.HalfNormal('sd_att', sd=10**2)
-    sd_def = pm.HalfNormal('sd_def', sd=10**2)
-
-
-    # team-specific model parameters
-    atts_star = pm.Normal("atts_star", mu=0, sd=sd_att, shape=n_teams)
-    defs_star = pm.Normal("defs_star", mu=0, sd=sd_def, shape=n_teams)
-
-    atts = pm.Deterministic('atts', atts_star - tt.mean(atts_star))
-    defs = pm.Deterministic('defs', defs_star - tt.mean(defs_star))
-
-    home_theta = tt.exp(intercept + atts[home_team] + defs[away_team])
-    away_theta = tt.exp(intercept + atts[away_team] + defs[home_team])
-
-
-    home_scored=pm.Poisson('home_scored', mu=home_theta, observed=observed_home_goals)
-    away_scored=pm.Poisson('away_scored', mu=away_theta, observed=observed_away_goals)
-
-
-    trace=pm.sample(3000, njobs=3)
-
-
-# import pickle # python3
-
-# with open('my_preds.pkl', 'wb') as buff:
-#     pickle.dump({'model': team_abilities, 'trace': trace}, buff)
-
-
-
-
-#Brazil, England, Korea, Argentina
-#2, 3, 8, 0
 
 def run_games(a, b, samples=len(trace)):
+
+    '''
+    Get result of a match between a and b, 'sample' times. 
+    sample should be an integer >=1. 
+    a, b are intengers, correspondng to indices ofthe 'all_teams' array
+    '''
 
     with team_abilities:
         home_team.set_value([a])
@@ -152,6 +24,9 @@ def run_games(a, b, samples=len(trace)):
     return ppc
 
 def match(a, b, samples=len(trace)):
+    '''
+    Simulate one match (or 'sample' matches, for sample an integer >1) between two teams a and b, and save the results nicely. a, b are integers corresponding to indices of the 'all_teams' array
+    '''
 
     ppc=run_games(a, b, samples=samples)
 
@@ -179,6 +54,10 @@ def match(a, b, samples=len(trace)):
 
 def knockout_match(a, b, samples=1):
 
+    '''
+    Run a knockout game. If there's a draw, the teams go to a penalty shootout with 50% chance of winning each
+    '''
+
     ppc=run_games(a, b, samples=samples)
 
     A=pd.DataFrame(data=np.array([ppc['home_scored'], ppc['away_scored']]).T, columns=['goals_for', 'goals_against'])
@@ -201,20 +80,11 @@ def knockout_match(a, b, samples=1):
 
     return A, B, A.win.values[0], B.win.values[0]
 
-#Group Results
-#Number is group placing
-
-#Knockout results
-#0 - didn't qualify from group
-#1 - lost in round of 16
-#2 - lost in QF
-#3 - lost in SF
-#4 - lost in F
-#5 - won
-
-
 
 def knockout_rounds(teams, results):
+    '''
+    Run a knockout round from start to finish
+    '''
 
     #Knockout round is AvB, CvD, EvF, GvH, IvJ, KvL, MvN, OvP
     #                      AvC,     EvG      IvK       MvO
@@ -260,6 +130,10 @@ def knockout_rounds(teams, results):
     return teams[mask], results
 
 def world_cup(knockout_teams):
+
+    '''
+    Simulate a whole world cup- uncomment to also simulate a group stage too
+    '''
 
 
     # group_a=["Russia", "Saudi Arabia", "Egypt", "Uruguay"]
@@ -312,6 +186,9 @@ def world_cup(knockout_teams):
     return final_results, winner
 
 def group(group_letter, groups, all_results, samples=1):
+    '''
+    Simulate a group stage with given teams
+    '''
 
     names=groups[group_letter]
     #Matches are (ab, cd), (ac, bd), (ad, bc)
@@ -363,6 +240,9 @@ def group(group_letter, groups, all_results, samples=1):
 
 
 def show_group_probabilities(probs, teams, ax=None):
+    '''
+    Show where teams finish if we simulate a group
+    '''
 
     #Add P(qualifying) axis
     probs=np.column_stack((probs, np.sum(probs[:, :2], axis=1)))
@@ -386,6 +266,12 @@ def show_group_probabilities(probs, teams, ax=None):
 
 
 def make_violinplot(t, n, inds, cmap='plasma', context='seaborn-white', **kwargs):
+    '''
+    Make a violin plot. 
+    t- numpy array of traces, shape [9000, 20]
+    n- names of teams for the y labels
+    inds- indices which sort the teams into top and bottom 20
+    '''
 
     xlabel=kwargs.pop('xlabel', '')
     title=kwargs.pop('title', '')
@@ -423,18 +309,147 @@ def make_violinplot(t, n, inds, cmap='plasma', context='seaborn-white', **kwargs
     return fig, ax
 
 if __name__=='__main__':
-
     from tqdm import tqdm
+
+    #Load the table
+    df=pd.read_csv('results.csv')
+    wc_df=pd.read_csv('wc_matches.csv')
+    wc_teams=wc_df.team1.unique()
+
+    #Get rid of teams with few games and make sure all world cup nations are represented
+    home_team_games=df.groupby(['home_team']).size() 
+    all_teams=set(home_team_games[home_team_games.sort_values()>100].index.values)
+    all_teams.add('Serbia')
+    all_teams.add('Iceland')
+    all_teams.add('Croatia')
+    all_teams.add('Panama')
+
+    all_teams=np.array(list(all_teams))
+    all_teams[np.where(all_teams=='Korea Republic')]='South Korea'
+
+
+    #Get rid of some of the smaller teams
+    all_teams=np.delete(all_teams, [np.where(all_teams=='Uganda'), np.where(all_teams=='Zambia'), np.where(all_teams=='Malaysia'), np.where(['Czechoslovakia'])])
+
+
+
+    #Add some columns- currently not used in the model
+    tmp1 = df[['date','home_team', 'home_score']]
+    tmp2 = df[['date','away_team', 'away_score']]
+    tmp1.columns =  ['Date','name', 'score']
+    tmp2.columns =  ['Date','name', 'score']
+    tmp = pd.concat([tmp1,tmp2], ignore_index=True)
+    df['home_last_5_goals_for']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
+
+    tmp = pd.concat([tmp2,tmp1], ignore_index=True)
+    df['away_last_5_goals_for']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
+
+    tmp1 = df[['date','home_team', 'away_score']]
+    tmp2 = df[['date','away_team', 'home_score']]
+    tmp1.columns =  ['Date','name', 'score']
+    tmp2.columns =  ['Date','name', 'score']
+    tmp = pd.concat([tmp1,tmp2], ignore_index=True)
+    df['home_last_5_goals_against']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
+
+    tmp = pd.concat([tmp2,tmp1], ignore_index=True)
+    df['away_last_5_goals_against']=tmp.sort_values(by='Date').groupby("name")["score"].rolling(5).sum().shift(1).reset_index(0, drop=True)
+
+    df['home_last_5_gd']=df['home_last_5_goals_for']-df['home_last_5_goals_against']
+    df['away_last_5_gd']=df['away_last_5_goals_for']-df['away_last_5_goals_against']
+
+    #Drop the first row of each group, since it's been contaminated by rolling the last row to the start.
+    #Here we make it nan and then dropna 
+    def mask_first(x):
+        result = np.ones_like(x)
+        result[0] = 0
+        return result
+    mask = ~df.groupby(['home_team'])['home_score'].transform(mask_first).astype(bool)
+    df.loc[mask]=np.nan
+    df=df.dropna()
+
+
+
+    #Get theteams in each match
+    teams = pd.DataFrame(all_teams, columns=['team'])
+    teams['i'] = teams.index
+    mask=(df.home_team.isin(all_teams))&(df.away_team.isin(all_teams))
+    df=df[mask]
+
+
+    #Merge
+    df = pd.merge(df, teams, left_on='home_team', right_on='team', how='left')
+    df = df.rename(columns = {'i': 'i_home'}).drop('team', 1)
+    df = pd.merge(df, teams, left_on='away_team', right_on='team', how='left')
+    df = df.rename(columns = {'i': 'i_away'}).drop('team', 1)
+
+    #Only use matches since 2000
+    from datetime import datetime
+    cutoff=datetime(2000, 1, 1)
+    df.date=pd.to_datetime(df['date'])
+    df=df[df.date>cutoff]
+    tmp.Date=pd.to_datetime(tmp['Date'])
+
+
+    n_matches=tmp[tmp.Date>cutoff].name.value_counts()
+    n_teams=len(np.unique(all_teams))
+
+
+    #Theano shared variables, so we can update them later
+    home_team = theano.shared(df.i_home.values)
+    away_team = theano.shared(df.i_away.values)
+
+    #Home Goals and Away goals for each match
+    observed_home_goals = df.home_score.values
+    observed_away_goals = df.away_score.values
+
+    # #Goal Difference in last 5 games-not used at the moment
+    # home_last_5_gd=df.home_last_5_gd.values
+    # away_last_5_gd=df.away_last_5_gd.values
+
+    # #zscore 
+    # home_gd_z=theano.shared((home_last_5_gd-np.mean(home_last_5_gd))/np.std(home_last_5_gd))
+    # away_gd_z=theano.shared((away_last_5_gd-np.mean(away_last_5_gd))/np.std(away_last_5_gd))
+
+    #The pymc3 model
+    with pm.Model() as team_abilities:
+
+        #Priors
+        intercept = pm.Flat('intercept')
+        sd_att = pm.HalfNormal('sd_att', sd=10**2)
+        sd_def = pm.HalfNormal('sd_def', sd=10**2)
+
+
+        # team-specific model parameters
+        atts_star = pm.Normal("atts_star", mu=0, sd=sd_att, shape=n_teams)
+        defs_star = pm.Normal("defs_star", mu=0, sd=sd_def, shape=n_teams)
+
+        atts = pm.Deterministic('atts', atts_star - tt.mean(atts_star))
+        defs = pm.Deterministic('defs', defs_star - tt.mean(defs_star))
+
+        #Make the model identifiable
+        home_theta = tt.exp(intercept + atts[home_team] + defs[away_team])
+        away_theta = tt.exp(intercept + atts[away_team] + defs[home_team])
+
+
+        home_scored=pm.Poisson('home_scored', mu=home_theta, observed=observed_home_goals)
+        away_scored=pm.Poisson('away_scored', mu=away_theta, observed=observed_away_goals)
+
+
+        trace=pm.sample(3000, njobs=3)
+
+    
+    #Get the teams which are in the world cup
     inds=np.where(np.in1d(all_teams, wc_teams))
     names=all_teams[np.where(np.in1d(all_teams, wc_teams))]
 
-
+    #Knockout round where England lose to Belgium
     knockout_teams_1=['Uruguay', 'Portugal', 'France', 'Argentina', 'Brazil', 'Mexico', 'Belgium', 'Japan', 'Spain', 'Russia', 'Croatia', 'Denmark', 'Sweden', 'Switzerland', 'Colombia', 'England']
 
+    #Kncokout round where we win the group
     knockout_teams_2=['Uruguay', 'Portugal', 'France', 'Argentina', 'Brazil', 'Mexico', 'England', 'Japan', 'Spain', 'Russia', 'Croatia', 'Denmark', 'Sweden', 'Switzerland', 'Colombia', 'Belgium']
 
 
-
+    #Do the simulations
     n_sims=10000
     f, winner=world_cup(knockout_teams_1)
     for i in tqdm(range(n_sims)):
@@ -444,13 +459,14 @@ if __name__=='__main__':
         f=pd.concat((f, b), axis=1)
 
 
+    #get the results as precentages
     res=f.T.apply(pd.Series.value_counts)/n_sims*100.
     f.to_csv('sims_correct_WC_bracket.csv')
     res.to_csv('sims_correct_WC_bracket_summary.csv')
+    #res.T.sort_values(4.0, ascending=False)
 
 
-
-
+    #Plot things
     fig, ax=plt.subplots(figsize=(17, 8))
     cax=ax.matshow(res, cmap='viridis')
     ax.set_xticks(np.arange(16))
@@ -462,9 +478,10 @@ if __name__=='__main__':
 
     fig.tight_layout()
 
-    res.T.sort_values(4.0, ascending=False)
+    
+    #make violin plots
 
-
+    #Sort by which team are best at attacking...
     medians=np.percentile(trace['atts'], 50, axis=0)
     top_inds=np.argsort(medians)[-10:]
     bottom_inds=np.argsort(medians)[:10]
@@ -477,7 +494,7 @@ if __name__=='__main__':
 
     fig, ax=make_violinplot(t, n, sorted_inds, cmap='plasma', context='seaborn-white', title='Attacking', xlabel='Attack')
 
-
+    #...and defending
     medians=np.percentile(trace['defs'], 50, axis=0)
     top_inds=np.argsort(medians)[-10:]
     bottom_inds=np.argsort(medians)[:10]
@@ -489,9 +506,3 @@ if __name__=='__main__':
 
     fig, ax=make_violinplot(t, n, sorted_inds, cmap='plasma', context='seaborn-white', title='Defending', xlabel='Defend')
 
-
-
-
-
-
-    #table=group(2, 3, 8, 0)
